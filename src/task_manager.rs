@@ -55,8 +55,8 @@ where
         let mut data = self.data.lock().unwrap();
         let next = data.next;
         data.next += 1;
-
         let task_assignment = data.task_assignment[next % data.parallel].clone();
+        drop(data);
 
         task_assignment.send(f)
     }
