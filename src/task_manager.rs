@@ -5,24 +5,19 @@ use std::{
     },
     thread::{self, available_parallelism},
 };
-pub type Task = Box<dyn FnOnce() + Send + Sync>;
+pub type Task = dyn FnOnce() + Send + 'static;
+pub type TaskBox = Box<Task>;
 
-struct TaskManagerData<F> {
+struct TaskManagerData {
     next: usize,
-    task_assignment: Vec<Sender<F>>,
+    task_assignment: Vec<Sender<TaskBox>>,
     parallel: usize,
 }
-pub struct TaskManager<F>
-where
-    F: FnOnce(),
-{
-    data: Arc<Mutex<TaskManagerData<F>>>,
+pub struct TaskManager {
+    data: Arc<Mutex<TaskManagerData>>,
 }
 
-impl<F> TaskManager<F>
-where
-    F: 'static + FnOnce() + Sync + Send,
-{
+impl TaskManager {
     pub fn new() -> Self {
         let parallel = available_parallelism().unwrap();
         let mut data = TaskManagerData {
@@ -32,7 +27,7 @@ where
         };
 
         for _ in 0..data.parallel {
-            let (task_assignment, task_list) = mpsc::channel::<F>();
+            let (task_assignment, task_list) = mpsc::channel::<TaskBox>();
             data.task_assignment.push(task_assignment);
             thread::spawn(move || TaskManager::thread_worker(task_list));
         }
@@ -42,7 +37,7 @@ where
         }
     }
 
-    fn thread_worker(task_list: Receiver<F>) {
+    fn thread_worker(task_list: Receiver<TaskBox>) {
         loop {
             match task_list.recv() {
                 Ok(f) => f(),
@@ -51,21 +46,18 @@ where
         }
     }
 
-    pub fn work(&self, f: F) -> Result<(), SendError<F>> {
+    pub fn work(&self, f: impl FnOnce() + Send + 'static) -> Result<(), SendError<TaskBox>> {
         let mut data = self.data.lock().unwrap();
         let next = data.next;
         data.next += 1;
         let task_assignment = data.task_assignment[next % data.parallel].clone();
         drop(data);
 
-        task_assignment.send(f)
+        task_assignment.send(Box::new(f))
     }
 }
 
-impl<F> Clone for TaskManager<F>
-where
-    F: 'static + FnOnce() + Sync + Send,
-{
+impl Clone for TaskManager {
     fn clone(&self) -> Self {
         Self {
             data: self.data.clone(),
